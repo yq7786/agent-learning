@@ -63,7 +63,7 @@ for (const relativeSourcePath of sourceFiles) {
   }
 
   generatedPages.push(relativePagePath)
-  links.push(`- [\`src/${relativeSourcePath}\`](/code/${sourceRoute(relativeSourcePath)})`)
+  links.push(`- [\`src/${relativeSourcePath}\`](./${sourceRoute(relativeSourcePath)})`)
 }
 
 const indexPath = 'index.md'
