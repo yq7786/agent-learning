@@ -1,0 +1,34 @@
+{
+  "name": "super-agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "docs:dev": "node scripts/generate-code-pages.mjs && vitepress dev website",
+    "docs:build": "node scripts/generate-code-pages.mjs && vitepress build website"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.32.1",
+  "dependencies": {
+    "@ai-sdk/openai": "^4.0.69",
+    "ai": "^7.0.105",
+    "dotenv": "^17.4.2",
+    "fast-glob": "3.3.3",
+    "turndown": "^7.2.4",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/server-github": "2025.4.8",
+    "@types/node": "^22.20.3",
+    "@types/turndown": "^5.0.6",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vitepress": "^1.6.4"
+  }
+}
