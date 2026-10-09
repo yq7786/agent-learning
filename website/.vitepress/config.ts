@@ -31,7 +31,7 @@ export default defineConfig({
             { text: '全部文件', link: '/code/' },
             ...sourceFiles.map((file) => ({
               text: `src/${file}`,
-              link: `/code/${sourceRoute(file)}`,
+              link: `${base}code/${sourceRoute(file)}`,
             })),
           ],
         },
