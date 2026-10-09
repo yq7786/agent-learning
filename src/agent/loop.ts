@@ -1,4 +1,5 @@
 import { streamText, type ModelMessage } from "ai";
+import { ToolRegistry } from "../tools/registry";
 import {
   detect,
   recordCall,
@@ -6,7 +7,6 @@ import {
   resetHistory,
 } from "./loop-detection";
 import { calculateDelay, isRetryable, sleep } from "./retry";
-import { ToolRegistry } from "./tool-registry";
 
 const MAX_STEPS = 15;
 const MAX_RETRIES = 3;
