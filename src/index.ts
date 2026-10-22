@@ -3,6 +3,17 @@ import { type ModelMessage } from "ai";
 import "dotenv/config";
 import { createInterface } from "node:readline";
 import { agentLoop } from "./agent/loop";
+import { estimateTokens, microcompact, summarize } from "./context/compressor";
+import { applyDefense, TokenTracker } from "./context/defense";
+import {
+  coreRules,
+  deferredTools,
+  PromptBuilder,
+  PromptContext,
+  sessionContext,
+  toolGuide,
+} from "./context/prompt-builder";
+import { SessionStore } from "./session/store";
 import { allTools } from "./tools";
 import { MCPClient } from "./tools/mcp-client";
 import { ToolDefinition, ToolRegistry } from "./tools/registry";
@@ -12,11 +23,6 @@ const deepSeek = createOpenAI({
   apiKey: process.env.DASHSCOPE_API_KEY,
 });
 const model = deepSeek.chat("deepseek-flash");
-
-const BUDGET = {
-  used: 0,
-  limit: 200000,
-};
 
 const registry = new ToolRegistry();
 registry.register(...allTools);
@@ -91,45 +97,103 @@ async function connectMCP() {
 }
 
 async function main() {
-  await connectMCP();
+  // await connectMCP();
 
-  console.log(`\n已注册 ${registry.getAll().length} 个工具：`);
-  for (const tool of registry.getAll()) {
-    const isMCP = tool.name.startsWith("mcp__");
-    const flags = [
-      isMCP ? "MCP" : "内置",
-      tool.isConcurrencySafe ? "可并发" : "串行",
-    ].join(", ");
-    console.log(`  - ${tool.name}（${flags}）`);
-  }
+  // console.log(`\n已注册 ${registry.getAll().length} 个工具：`);
+  // for (const tool of registry.getAll()) {
+  //   const isMCP = tool.name.startsWith("mcp__");
+  //   const flags = [
+  //     isMCP ? "MCP" : "内置",
+  //     tool.isConcurrencySafe ? "可并发" : "串行",
+  //   ].join(", ");
+  //   console.log(`  - ${tool.name}（${flags}）`);
+  // }
 
-  const allCount = registry.getAll().length;
-  const activeTools = registry.getActiveTools();
-  const estimate = registry.countTokenEstimate();
+  // const allCount = registry.getAll().length;
+  // const activeTools = registry.getActiveTools();
+  // const estimate = registry.countTokenEstimate();
 
-  console.log(`\n=== 工具统计 ===`);
-  console.log(`  全部工具: ${allCount} 个`);
-  console.log(`  活跃工具: ${activeTools.length} 个（非延迟）`);
-  console.log(`  延迟工具: ${allCount - activeTools.length} 个`);
-  console.log(
-    `  Token 估算: ~${estimate.active} (活跃) + ~${estimate.deferred} (延迟)`
-  );
+  // console.log(`\n=== 工具统计 ===`);
+  // console.log(`  全部工具: ${allCount} 个`);
+  // console.log(`  活跃工具: ${activeTools.length} 个（非延迟）`);
+  // console.log(`  延迟工具: ${allCount - activeTools.length} 个`);
+  // console.log(
+  //   `  Token 估算: ~${estimate.active} (活跃) + ~${estimate.deferred} (延迟)`
+  // );
 
   const deferredSummary = registry.getDeferredToolSummary();
 
-  const messages: ModelMessage[] = [];
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // Session 持久化
+  // 启动时如果带了 --continue 参数并且有历史文件，就从文件恢复对话
+  const isContinue = process.argv.includes("--continue");
+  const sessionId = "default";
+  const store = new SessionStore(sessionId);
+  const timestamps = new Map<number, number>();
+  const tracker = new TokenTracker();
 
-  /*
-  这个流程有三步：
-  1. 模型在 System prompt(通过 deferredSummary) 的延迟工具列表里看到了 mcp__github__list_issues，于是调 tool_search 传入这个精确的工具名
-  2. tool_search 返回了完整的 Schema 定义。同时这个工具被加入 discoveredTools 集合，下一轮请求它就出现在 tools 参数里了
-  3. 模型拿到 Schema 后知道需要传 owner 和 repo，正常调用
-  */
-  const SYSTEM = `你是 Super Agent，一个有工具调用能力的 AI 助手。
-你有内置工具和 MCP 工具可用。
-如果你需要的工具不在当前列表中，使用 tool_search 工具搜索可用工具。
-回答要简洁直接。${deferredSummary}`;
+  let messages: ModelMessage[] = [];
+
+  if (isContinue && store.exists()) {
+    messages = store.load();
+    console.log(`[Session] 恢复会话，${messages.length} 条历史消息`);
+  } else {
+    console.log(`[Session] 新会话`);
+  }
+
+  let summary = "";
+
+  // ── 压缩演示 ──
+  const beforeTokens = estimateTokens(messages);
+  console.log(`\n[压缩前] ${messages.length} 条消息, ~${beforeTokens} tokens`);
+
+  // Layer 1: Microcompact
+  const mc = microcompact(messages);
+  messages = mc.messages;
+  const afterMCTokens = estimateTokens(messages);
+  console.log(
+    `[Layer 1: Microcompact] 清理了 ${mc.cleared} 个工具结果, ~${afterMCTokens} tokens`
+  );
+
+  // Layer 2: LLM Summarization
+  const compResult = await summarize(model, messages, summary);
+  messages = compResult.messages;
+  summary = compResult.summary;
+  const afterSumTokens = estimateTokens(messages);
+  if (compResult.compressedCount > 0) {
+    console.log(
+      `[Layer 2: Summarization] 压缩了 ${compResult.compressedCount} 条消息, ~${afterSumTokens} tokens`
+    );
+    console.log(`[摘要预览] ${summary.slice(0, 150)}...`);
+  } else {
+    console.log(`[Layer 2: Summarization] 未触发（消息量不够）`);
+  }
+
+  console.log(
+    `[压缩后] ${messages.length} 条消息, ~${afterSumTokens} tokens (节省 ${
+      beforeTokens - afterSumTokens
+    } tokens)\n`
+  );
+
+  // Prompt Pipe 组装 system prompt
+  const builder = new PromptBuilder()
+    .pipe("coreRules", coreRules())
+    .pipe("toolGuide", toolGuide())
+    .pipe("deferredTools", deferredTools())
+    .pipe("sessionContext", sessionContext());
+
+  const promptCtx: PromptContext = {
+    toolCount: registry.getActiveTools().length,
+    deferredToolSummary: registry.getDeferredToolSummary(),
+    sessionMessageCount: messages.length,
+    sessionId,
+  };
+
+  const SYSTEM = builder.build(promptCtx);
+
+  // Debug: 显示 Prompt Pipe 各模块状态
+  builder.debug(promptCtx);
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
 
   function ask() {
     rl.question("\nYou: ", async (input) => {
@@ -141,8 +205,30 @@ async function main() {
         return;
       }
 
-      messages.push({ role: "user", content: trimmed });
-      await agentLoop(model, registry, messages, SYSTEM, BUDGET);
+      const userMsg: ModelMessage = { role: "user", content: trimmed };
+      messages.push(userMsg);
+      tracker.addMessage(userMsg);
+      timestamps.set(messages.length - 1, Date.now());
+      store.append(userMsg);
+
+      // Apply all three defense layers before every model turn.
+      const turnDefense = applyDefense(messages, timestamps);
+      tracker.replaceMessages(messages, turnDefense.messages);
+      messages = turnDefense.messages;
+
+      const beforeLen = messages.length;
+      await agentLoop(model, registry, messages, SYSTEM, tracker);
+
+      const newMessages = messages.slice(beforeLen);
+      const now = Date.now();
+      for (let i = beforeLen; i < messages.length; i++) {
+        timestamps.set(i, now);
+      }
+      store.appendAll(newMessages);
+
+      const status = tracker.status;
+      console.log(`  [Token] ~${status.tokens} tokens (${status.percent}%)`);
+
       ask();
     });
   }

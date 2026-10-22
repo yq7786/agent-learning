@@ -3,6 +3,7 @@ node_modules/
 .env
 .env.*
 !.env.example
+.sessions/
 docs/superpowers/
 website/.vitepress/cache/
 website/.vitepress/dist/

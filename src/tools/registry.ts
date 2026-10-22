@@ -46,6 +46,12 @@ export class ToolRegistry {
 
   private discoveredTools = new Set<string>();
 
+  /* ...tools 这里并不是展开，而是收集参数。它把传进来的多个参数 收集成一个数组。
+  register(a, b, c);       // 三个独立实参
+  register(...[a, b, c]);  // 调用处的 ... 是展开，把数组拆成三个实参
+  register(a);             // 只传一个，tools 就是 [a]
+  */
+
   register(...tools: ToolDefinition[]): void {
     for (const tool of tools) {
       this.tools.set(tool.name, tool);
