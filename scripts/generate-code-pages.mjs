@@ -30,7 +30,7 @@ function makePage(relativeSourcePath, source) {
   const language = languageByExtension.get(extension) ?? 'text'
   const fence = makeFence(source)
 
-  return `# \`${title}\`\n\n完整源码与注释：\n\n${fence}${language}\n${source}${source.endsWith('\n') ? '' : '\n'}${fence}\n`
+  return `---\naside: false\n---\n\n# \`${title}\`\n\n完整源码与注释：\n\n${fence}${language}\n${source}${source.endsWith('\n') ? '' : '\n'}${fence}\n`
 }
 
 await mkdir(outputRoot, { recursive: true })
