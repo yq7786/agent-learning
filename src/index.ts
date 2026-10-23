@@ -134,6 +134,7 @@ async function main() {
   let messages: ModelMessage[] = [];
 
   if (isContinue && store.exists()) {
+    // 恢复的历史消息没有在这里补上时间记录。 因此，查不到时间的历史消息会跳过 TTL 清理。
     messages = store.load();
     console.log(`[Session] 恢复会话，${messages.length} 条历史消息`);
   } else {
@@ -195,6 +196,11 @@ async function main() {
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
+  /*
+  整个防御体系的执行顺序是：截断（Layer 2）→ TTL 修剪（Layer 3）→ Token 估算（Layer 1，判断是否需要 LLM 压缩）
+  如果需要，触发 Microcompact → 如果还不够，触发 Summarization。
+  从轻到重，能用简单手段解决的绝不上复杂方案。
+  */
   function ask() {
     rl.question("\nYou: ", async (input) => {
       const trimmed = input.trim();
@@ -207,12 +213,15 @@ async function main() {
 
       const userMsg: ModelMessage = { role: "user", content: trimmed };
       messages.push(userMsg);
+      // 把新增内容记到账本
       tracker.addMessage(userMsg);
+      // 记录这条消息的时间， 用于后续的 TTL 清理。
       timestamps.set(messages.length - 1, Date.now());
       store.append(userMsg);
 
-      // Apply all three defense layers before every model turn.
+      // Apply all three defense layers before every model turn. 处理过长、过旧的工具结果
       const turnDefense = applyDefense(messages, timestamps);
+      // 把内容变化同步到账本
       tracker.replaceMessages(messages, turnDefense.messages);
       messages = turnDefense.messages;
 

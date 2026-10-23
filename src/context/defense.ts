@@ -4,11 +4,18 @@ import {
   toolResultOutputToText,
 } from "./tool-result-output.js";
 
+/*
+defense.ts 主要解决一个问题：聊天记录和工具结果越来越长，怎样避免发给 AI 的内容过多？
+比如 AI 读取了一个很大的日志文件，返回几十万字。如果一直把这些内容保留在聊天记录中，后续请求就可能太大。
+这个文件用了三种办法：
+Token 追踪	       估算当前内容占用了多少空间
+按长度截断	       单个工具结果太长，或者总内容太多，就缩短结果
+按时间清理	       工具结果放久了，就缩短或清空它
+*/
 // ── Layer 1: Token Estimation ────────────────────────
-
 export class TokenTracker {
-  private lastPreciseCount = 0;
-  private pendingChars = 0;
+  private lastPreciseCount = 0; // 上一次 API 报告的输入 Token 数量
+  private pendingChars = 0; // 当前未处理的内容字符数
 
   updateFromAPI(promptTokens: number): void {
     this.lastPreciseCount = promptTokens;
@@ -25,10 +32,18 @@ export class TokenTracker {
     }
   }
 
+  /*
+  它处理的是：消息经过压缩，内容变短了，账本也要相应扣减。
+  比如：
+  处理前：4000 字符
+  处理后：400 字符
+  变化量：400 - 4000 = -3600 字符
+  */
   replaceMessages(before: ModelMessage[], after: ModelMessage[]): void {
     this.pendingChars += countMessagesChars(after) - countMessagesChars(before);
   }
 
+  // 这里有一个新写法：get。 它让你可以像读取属性一样，取得计算结果：tracker.estimatedTokens 不用写成：tracker.estimatedTokens()
   get estimatedTokens(): number {
     return Math.max(
       0,
@@ -76,6 +91,7 @@ function countMessagesChars(messages: ModelMessage[]): number {
   return chars;
 }
 
+// 当前消息字符总数 ÷ 4 × 1.2， 和前面的  estimatedTokens 不一样（API 上次用量 + 后续字符变化量 ÷ 4）
 export function estimateMessageTokens(messages: ModelMessage[]): number {
   const chars = countMessagesChars(messages);
   // 4 chars per token, with 1.2x safety factor for Chinese
@@ -101,7 +117,7 @@ export function truncateToolResults(
   let truncated = 0;
   let compacted = 0;
 
-  // Pass 1: single-result truncation (Head/Tail 60/40)
+  // Pass 1: single-result truncation (Head/Tail 60/40) 第一遍，检查每个工具结果是不是太长。
   let result = messages.map((msg) => {
     if (msg.role !== "tool" || !Array.isArray(msg.content)) return msg;
 
@@ -128,7 +144,7 @@ export function truncateToolResults(
     return { ...msg, content: newContent };
   });
 
-  // Pass 2: total budget enforcement — compact oldest tool results first
+  // Pass 2: total budget enforcement — compact oldest tool results first 第二遍，检查消息内容总量是不是太多。
   let totalChars = result.reduce((sum, msg) => {
     if (typeof msg.content === "string") return sum + msg.content.length;
     if (Array.isArray(msg.content)) {
@@ -147,6 +163,9 @@ export function truncateToolResults(
     return sum;
   }, 0);
 
+  // 如果统计值超过 contextBudgetChars，代码就从最早的消息开始，寻找工具消息，把它的输出替换成：
+  // [compacted: read_file output removed to free context]
+  // 这里没有 microcompact() 那种“保留最近三条”的规则。只要总量压力足够大，较新的工具结果也可能被处理。
   if (totalChars > config.contextBudgetChars) {
     for (
       let i = 0;
@@ -186,6 +205,13 @@ interface TTLConfig {
   keepHeadTail: number;
 }
 
+/*
+它的基本规则是：
+工具消息的年龄	               处理方式
+不足 5 分钟	                   保留
+满 5 分钟、不足 10 分钟	        过长时保留前 1500 字符和后 1500 字符
+满 10 分钟	                  用过期提示替换结果
+*/
 const DEFAULT_TTL: TTLConfig = {
   softTTLMs: 5 * 60 * 1000, // 5 minutes
   hardTTLMs: 10 * 60 * 1000, // 10 minutes
@@ -198,8 +224,10 @@ export interface PruneResult {
   hardPruned: number;
 }
 
+// 这些动作只有调用 ttlPrune() 时才会发生。 文件里没有启动一个每分钟自动清理的定时器。
 export function ttlPrune(
   messages: ModelMessage[],
+  // 消息在数组中的位置 → 记录的时间， 比如 timestamps.set(4, Date.now());
   timestamps: Map<number, number>,
   config: TTLConfig = DEFAULT_TTL
 ): PruneResult {
@@ -216,7 +244,7 @@ export function ttlPrune(
 
     const age = now - ts;
 
-    // Preserve error experiences — never prune failed tool results
+    // Preserve error experiences — never prune failed tool results 保留失败经验，供 AI 后续参考。
     const outputText = (msg.content as any[])
       .map((p: any) => (p.output ? toolResultOutputToText(p.output) : ""))
       .join("");
@@ -226,6 +254,7 @@ export function ttlPrune(
     if (isError) return msg;
 
     // Hard clear: replace entire content with placeholder
+    // 为什么先检查 10 分钟，再检查 5 分钟？ 因为先处理更严格的情况，跟 loop detection 的逻辑一致。
     if (age >= config.hardTTLMs) {
       hardPruned++;
       const toolName = (msg.content[0] as any)?.toolName || "unknown";
@@ -250,6 +279,11 @@ export function ttlPrune(
         const tail = outputText.slice(-config.keepHeadTail);
         const removed = outputText.length - config.keepHeadTail * 2;
 
+        /*
+        前 1500 字符
+        [soft pruned: ... chars removed, content older than 5min]
+        后 1500 字符
+        */
         return {
           ...part,
           output: textToolResultOutput(
