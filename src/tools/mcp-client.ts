@@ -13,7 +13,8 @@ interface MCPCallResult {
 }
 
 /*
-我们手写了 MCPClient，是为了搞清楚 MCP 在传输层到底做了什么。但生产环境里你不会自己维护 JSON-RPC 的请求匹配、超时处理、协议版本协商这些细节。
+我们手写 MCPClient，是为了理解 MCP 在传输层的工作方式。
+但生产环境通常不会自己维护 JSON-RPC 请求匹配、超时处理和协议版本协商。
 官方提供了 @modelcontextprotocol/sdk，用它替换手写的 Client 非常简单：
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -37,7 +38,9 @@ const result = await client.callTool({
 Client 替代了 pending Map + id 匹配 + 超时处理。
 API 层面几乎一样：listTools()、callTool()，连方法名都没变。
 
-所以 ToolRegistry 的 registerMCPServer 方法几乎不用改 —— 把参数类型从自定义的 MCPClient 换成官方的 Client，listTools 和 callTool 的返回格式稍微适配一下就行。
+所以 ToolRegistry 的 registerMCPServer 方法几乎不用改：
+把参数类型从自定义 MCPClient 换成官方 Client，
+再稍微适配 listTools 和 callTool 的返回格式即可。
 
 架构设计是通用的，底层实现随时可以换。有了上面的手写过程之后，相信你对这个 SDK 的理解也比一般人更深了一步。
 */
@@ -72,9 +75,14 @@ export class MCPClient {
      *
      * 例如：
      *   this.command = "npx";
-     *   this.args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/test"];
+     *   this.args = [
+     *     "-y",
+     *     "@modelcontextprotocol/server-filesystem",
+     *     "/Users/test",
+     *   ];
      * 本质相当于运行：
-     *   npx -y @modelcontextprotocol/server-filesystem /Users/test
+     *   npx -y @modelcontextprotocol/server-filesystem
+     *     /Users/test
      *
      * stdio 是 Standard Input / Output。普通程序通常有三个标准流：
      *   0 → stdin  → Standard Input  → 程序接收输入
@@ -86,7 +94,8 @@ export class MCPClient {
      *
      *   父进程                              子进程
      *   MCP Client                          MCP Server
-     *                                   你可以把 Server 理解成，我们的子程序运行了某个服务，比如 GitHub 的 SDK
+     *                                   Server 可以理解为运行服务的子程序，
+     *                                   例如 GitHub SDK。
      *
      *   this.process.stdin ───────────────► stdin
      *                                         │
@@ -102,7 +111,9 @@ export class MCPClient {
      *                                         ▼
      *   this.process.stdout ◄────────────── stdout
      *
-     *  更具体完整的流程在笔记里: https://app.notion.com/p/AI-Agents-in-Depth-3b8546810595800ca54be52db5355f0e?source=copy_link#3ec54681059580bfa4f3e6ac07aa56dc
+     *  更完整的流程见 Notion 笔记：
+     *  https://app.notion.com/p/AI-Agents-in-Depth-3b8546810595800ca54be52db5355f0e
+     *  对应章节：3ec54681059580bfa4f3e6ac07aa56dc
      */
     this.process = spawn(this.command, this.args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -211,7 +222,8 @@ export class MCPClient {
             );
           } else {
             /*
-             * 成功时 p.resolve(msg.result)，await this.send(...) 得到 msg.result。
+             * 成功时 p.resolve(msg.result)，
+             * await this.send(...) 会得到 msg.result。
              *
              * 底层时序：
              *   发送请求
@@ -259,11 +271,12 @@ export class MCPClient {
     });
 
     /*
-     * 给 MCP Server 发送 initialize 请求，并且一定要等 Server 回 initialize response
-     * 以后，再继续执行 connect。
+     * 给 MCP Server 发送 initialize 请求，
+     * 并等 Server 返回 initialize response 后再继续 connect。
      *
      * 为什么必须 await？
-     * 如果没有 await，会立刻连发 initialize request 和 notifications/initialized，
+     * 如果没有 await，就会立刻连发 initialize request 和
+     * notifications/initialized，
      * 但握手逻辑要求严格按顺序：
      *
      *   Client
@@ -280,7 +293,8 @@ export class MCPClient {
      *     ▼
      *   Server
      *
-     * 所以这里 await 起到“顺序控制”的作用：等 Server 回 initialize response 后，
+     * 所以 await 在这里起到“顺序控制”的作用：
+     * 等 Server 返回 initialize response 后，
      * 再发送 notifications/initialized。
      *
      * 为什么 notifications/initialized 不走 send()？

@@ -9,10 +9,14 @@ export interface ToolCallRecord {
 
 export type DetectorKind =
   | "generic_repeat"
-  // 通用重复检测， 比如工具调用参数相同，且连续调用多次，则认为可能陷入了重复。检测器只告警，不阻断。因为有些工具确实会被合法地反复调用。
-  // 比如你让 Agent 处理 20 个文件，read_file 被用相同的参数调用多次可能只是因为 Agent 在不同的推理步骤需要重新读取文件内容。
-  // 无进展轮询检测 也是通用重复检测的一种，这个检测器比第一种更严格：不光看参数一样，还看结果一样。如果状态真的长时间没变，Agent 应该干点别的去。
-  | "ping_pong" // 乒乓循环检测，检测两个工具交替调用的模式：read_file → write_file → read_file → write_file → ... 关键判断条件是：两边的结果都没变化。
+  // 通用重复检测：同一工具和参数连续调用多次时，认为可能陷入重复。
+  // 它只告警，不阻断，因为重复调用也可能是正常的。
+  // 例如 Agent 处理 20 个文件时，可能在不同推理步骤中多次读取文件。
+  // 无进展轮询也属于这一类，但条件更严格：调用参数和结果都相同。
+  // 如果状态长时间不变，Agent 应尝试其他方法。
+  // 乒乓循环检测：两个工具交替调用，例如 read_file → write_file，
+  // 再次调用 read_file → write_file；只有两边结果都没变化才算循环。
+  | "ping_pong"
   | "global_circuit_breaker"; // 全局熔断检测
 
 export type DetectionResult =
@@ -40,7 +44,8 @@ function stableStringify(value: unknown): string {
 }
 
 function hash(input: string): string {
-  // update用于将输入字符串写入哈希对象，作为计算哈希值的数据来源对 input 进行哈希计算。
+  // update 用于把输入字符串写入哈希对象，作为计算哈希值的数据来源。
+  // 然后对 input 进行哈希计算。
   return createHash("sha256").update(input).digest("hex").slice(0, 16);
 }
 
@@ -88,8 +93,9 @@ export function resetHistory(): void {
 }
 
 // 这段函数在数 「同一工具、同一参数，同一结果」 有几次。
-// 中间夹了别的工具也没关系。read(A) → bash(...) → read(A) 仍然算同一条 streak。这
-// 是 continue 不是 break：别的调用 不断开 这条「无进展」计数
+// 中间夹了别的工具也没关系。
+// read(A) → bash(...) → read(A) 仍然算同一条 streak。
+// 这里使用 continue，不使用 break：别的调用不会断开计数。
 // 次数够高，就说明 Agent 在空转：同样的动作，环境没有任何变化。
 /* 例子：
     history（从旧到新），正在检测的是再次 read("a.ts")：
@@ -124,9 +130,10 @@ function getNoProgressStreak(toolName: string, argsHash: string): number {
   return streak;
 }
 
-//检测乒乓循环：Agent 在两种不同的工具调用之间来回切换，形如 A → B → A → B → A → …。
-//A、B 可以是两个不同工具，也可以是同一工具、不同参数, 比如 read(file1)、read(file2)、read(file1)
-//只要 argsHash 不同，并且来回切换，就算 1 次乒乓循环。
+// 检测乒乓循环：Agent 在两种工具调用间来回切换，形如 A → B → A → B。
+// A、B 可以是不同工具，也可以是同一工具配不同参数。
+// 例如 read(file1) → read(file2) → read(file1)。
+// 只要 argsHash 不同并且来回切换，就算一次乒乓循环。
 function getPingPongCount(currentHash: string): number {
   if (history.length < 3) return 0;
   const last = history[history.length - 1];
@@ -157,12 +164,14 @@ export function detect(toolName: string, params: unknown): DetectionResult {
 
   // detect() 把熔断放在最前面，是「最确定的信号优先」
   /*
-  /*
-  | 检测项                 | 判定条件                                 | 频率 | 场景例子                      | 处理方式               |
-  |------------------------|------------------------------------------|------|------------------------------|------------------------|
-  | generic_repeat         | 同一工具 + 同一参数，不管结果            | 高   | 合法重读文件、轮询任务都会撞上 | 先 warning 劝换招，20 次再停 |
-  | ping_pong              | A↔B 交替（argsHash 不同即可）            | 中   | read → write → read           | 同样先劝后停           |
-  | global_circuit_breaker | 同一工具 + 同一参数 + 同一结果，中途夹杂其他工具也算 | 低   | 环境长时间未变                | 直接停                 |
+  三种检测器的判定与处理方式：
+
+  - generic_repeat：同一工具和参数重复调用，不要求结果相同。
+    重读文件或轮询可能触发；先告警，达到阈值后停止。
+  - ping_pong：两个工具交替调用，参数哈希可以不同。
+    例如 read → write → read；先告警，再按阈值停止。
+  - global_circuit_breaker：同一工具、参数和结果重复，
+    中途可以夹杂其他工具调用；检测到后直接停止。
   */
 
   if (noProgress >= BREAKER_THRESHOLD) {
@@ -175,7 +184,8 @@ export function detect(toolName: string, params: unknown): DetectionResult {
     };
   }
   // 为什么 noProgress 没有 warning？
-  // 时间线上，warning 早就发过了。noProgress 每涨一次，背后必然是一次相同参数的调用；recentCount 都能数到。
+  // 时间线上 warning 早就发过了。
+  // noProgress 每增加一次，都会对应一次相同参数的调用，recentCount 可以统计到。
 
   const pingPong = getPingPongCount(argsHash);
   if (pingPong >= CRITICAL_THRESHOLD) {

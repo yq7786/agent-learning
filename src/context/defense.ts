@@ -43,7 +43,8 @@ export class TokenTracker {
     this.pendingChars += countMessagesChars(after) - countMessagesChars(before);
   }
 
-  // 这里有一个新写法：get。 它让你可以像读取属性一样，取得计算结果：tracker.estimatedTokens 不用写成：tracker.estimatedTokens()
+  // get 让调用者像读取属性一样取得计算结果：
+  // 使用 tracker.estimatedTokens，无需写成 tracker.estimatedTokens()。
   get estimatedTokens(): number {
     return Math.max(
       0,
@@ -91,7 +92,8 @@ function countMessagesChars(messages: ModelMessage[]): number {
   return chars;
 }
 
-// 当前消息字符总数 ÷ 4 × 1.2， 和前面的  estimatedTokens 不一样（API 上次用量 + 后续字符变化量 ÷ 4）
+// 当前消息字符总数 ÷ 4 × 1.2。
+// 这和 estimatedTokens 不同：它统计 API 上次用量与后续字符变化量。
 export function estimateMessageTokens(messages: ModelMessage[]): number {
   const chars = countMessagesChars(messages);
   // 4 chars per token, with 1.2x safety factor for Chinese
@@ -117,7 +119,8 @@ export function truncateToolResults(
   let truncated = 0;
   let compacted = 0;
 
-  // Pass 1: single-result truncation (Head/Tail 60/40) 第一遍，检查每个工具结果是不是太长。
+  // Pass 1: single-result truncation (Head/Tail 60/40)。
+  // 第一遍检查每个工具结果是否过长。
   let result = messages.map((msg) => {
     if (msg.role !== "tool" || !Array.isArray(msg.content)) return msg;
 
@@ -144,7 +147,8 @@ export function truncateToolResults(
     return { ...msg, content: newContent };
   });
 
-  // Pass 2: total budget enforcement — compact oldest tool results first 第二遍，检查消息内容总量是不是太多。
+  // Pass 2: enforce the total budget by compacting older tool results first.
+  // 第二遍检查消息内容总量是否超出预算。
   let totalChars = result.reduce((sum, msg) => {
     if (typeof msg.content === "string") return sum + msg.content.length;
     if (Array.isArray(msg.content)) {
@@ -163,9 +167,11 @@ export function truncateToolResults(
     return sum;
   }, 0);
 
-  // 如果统计值超过 contextBudgetChars，代码就从最早的消息开始，寻找工具消息，把它的输出替换成：
+  // 如果统计值超过 contextBudgetChars，就从最早的消息开始寻找工具消息，
+  // 并把它的输出替换成：
   // [compacted: read_file output removed to free context]
-  // 这里没有 microcompact() 那种“保留最近三条”的规则。只要总量压力足够大，较新的工具结果也可能被处理。
+  // 这里没有 microcompact() 的“保留最近三条”规则。
+  // 总量超限时，较新的工具结果也可能被处理。
   if (totalChars > config.contextBudgetChars) {
     for (
       let i = 0;
@@ -224,7 +230,8 @@ export interface PruneResult {
   hardPruned: number;
 }
 
-// 这些动作只有调用 ttlPrune() 时才会发生。 文件里没有启动一个每分钟自动清理的定时器。
+// 这些动作只会在调用 ttlPrune() 时发生。
+// 文件里没有启动每分钟自动清理的定时器。
 export function ttlPrune(
   messages: ModelMessage[],
   // 消息在数组中的位置 → 记录的时间， 比如 timestamps.set(4, Date.now());
@@ -244,7 +251,8 @@ export function ttlPrune(
 
     const age = now - ts;
 
-    // Preserve error experiences — never prune failed tool results 保留失败经验，供 AI 后续参考。
+    // Preserve failed tool results so the AI can learn from those errors.
+    // 保留失败结果，供 AI 后续参考。
     const outputText = (msg.content as any[])
       .map((p: any) => (p.output ? toolResultOutputToText(p.output) : ""))
       .join("");
@@ -254,7 +262,8 @@ export function ttlPrune(
     if (isError) return msg;
 
     // Hard clear: replace entire content with placeholder
-    // 为什么先检查 10 分钟，再检查 5 分钟？ 因为先处理更严格的情况，跟 loop detection 的逻辑一致。
+    // 为什么先检查 10 分钟，再检查 5 分钟？
+    // 因为先处理更严格的情况，和 loop detection 的逻辑一致。
     if (age >= config.hardTTLMs) {
       hardPruned++;
       const toolName = (msg.content[0] as any)?.toolName || "unknown";

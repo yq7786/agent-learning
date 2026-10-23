@@ -69,7 +69,9 @@ export async function agentLoop(
                 } else {
                   messages.push({
                     role: "user" as const,
-                    content: `[系统提醒] ${detection.message}。请换一个思路解决问题，不要重复同样的操作。`,
+                    content:
+                      `[系统提醒] ${detection.message}。` +
+                      "请换一个思路解决问题，不要重复同样的操作。",
                   });
                 }
               }

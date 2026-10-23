@@ -27,7 +27,8 @@ const model = deepSeek.chat("deepseek-flash");
 const registry = new ToolRegistry();
 registry.register(...allTools);
 
-// 注册 tool_search 工具: 根据关键词搜索已注册的工具，返回匹配工具的完整 Schema。
+// 注册 tool_search 工具：按关键词搜索已注册的工具，
+// 并返回匹配工具的完整 Schema。
 const toolSearchTool: ToolDefinition = {
   name: "tool_search",
   description:
@@ -134,7 +135,8 @@ async function main() {
   let messages: ModelMessage[] = [];
 
   if (isContinue && store.exists()) {
-    // 恢复的历史消息没有在这里补上时间记录。 因此，查不到时间的历史消息会跳过 TTL 清理。
+    // 恢复历史消息时不会在这里补充时间记录。
+    // 查不到时间的历史消息会跳过 TTL 清理。
     messages = store.load();
     console.log(`[Session] 恢复会话，${messages.length} 条历史消息`);
   } else {
@@ -219,7 +221,8 @@ async function main() {
       timestamps.set(messages.length - 1, Date.now());
       store.append(userMsg);
 
-      // Apply all three defense layers before every model turn. 处理过长、过旧的工具结果
+      // Apply all three defense layers before every model turn.
+      // 处理过长或过旧的工具结果。
       const turnDefense = applyDefense(messages, timestamps);
       // 把内容变化同步到账本
       tracker.replaceMessages(messages, turnDefense.messages);

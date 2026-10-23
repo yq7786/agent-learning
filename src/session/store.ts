@@ -58,7 +58,8 @@ export class SessionStore {
         }
       } catch {
         // skip malformed lines
-        // 对解析失败的行直接 skip——这就是 JSONL 的容错性，一行坏了不影响其他行。
+        // 解析失败的行会直接跳过。
+        // 这就是 JSONL 的容错性：一行损坏不影响其他行。
       }
     }
     return messages;

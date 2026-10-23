@@ -26,13 +26,18 @@ const DEFAULT_MAX_RESULT_CHARS = 3000;
 /*
 哪些工具该延迟？Claude Code 的做法是把工具分成两类：
 
-核心工具——几乎每次对话都会用到的，永远加载。Read、Edit、Write、Bash、Grep、Glob 这些，写代码离不开它们。
+核心工具——几乎每次对话都会用到，始终加载。
+Read、Edit、Write、Bash、Grep、Glob 等工具都是写代码常用的。
 
-低频工具——偶尔用一次的，标记 shouldDefer: true。WebSearch、NotebookEdit、LSP、Cron 这些，大部分对话用不上。
-所有通过 MCP Server 接入的工具也默认全部延迟——MCP 工具是用户自己装的，数量不可控。
+低频工具——偶尔使用的工具标记为 shouldDefer: true。
+例如 WebSearch、NotebookEdit、LSP 和 Cron，大部分对话用不上。
+MCP Server 接入的工具也默认延迟，因为用户安装的数量不可控。
 
-分类的依据就是使用频率，没有什么复杂的逻辑。Claude Code 还设了一个自动触发阈值：
-当延迟工具的 Schema 总量超过上下文窗口的 10% 时才启用延迟加载。低于这个阈值——比如你只接了一个 MCP Server、3 个工具，没必要多此一举，全量加载就行。
+分类依据是使用频率，没有更复杂的逻辑。
+Claude Code 还设置了一个自动触发阈值：
+只有延迟工具的 Schema 总量超过上下文窗口的 10%，才启用延迟加载。
+低于阈值时，例如只接入一个 MCP Server、只有 3 个工具，
+就直接加载全部工具。
 
 */
 export class ToolRegistry {
@@ -46,7 +51,8 @@ export class ToolRegistry {
 
   private discoveredTools = new Set<string>();
 
-  /* ...tools 这里并不是展开，而是收集参数。它把传进来的多个参数 收集成一个数组。
+  /* ...tools 这里不是展开，而是收集参数。
+  它会把传入的多个参数收集成一个数组。
   register(a, b, c);       // 三个独立实参
   register(...[a, b, c]);  // 调用处的 ... 是展开，把数组拆成三个实参
   register(a);             // 只传一个，tools 就是 [a]
@@ -121,24 +127,30 @@ export class ToolRegistry {
   }
 
   /*
-  过滤——getActiveTools 方法控制哪些工具进入 prompt。
-  延迟工具默认不输出，除非已经被 tool_search 发现过
+  getActiveTools 控制哪些工具进入 prompt。
+  延迟工具默认不输出，除非已经被 tool_search 发现。
 
   对 Prompt Cache 的影响
   tool_search 发现工具后，下一轮请求会把这个工具加进 tools 参数里——工具列表变了，
   从工具定义的位置开始 KV Cache 失效。
 
-  知识体系课讲过，Claude Code 用 Anthropic API 的 defer_loading beta 特性
-  解决了这个问题——延迟工具的 Schema 出现在对话历史里（tool_result 消息中），不在工具定义区域，所以 cache 前缀完全不受影响。
+  知识体系课提到，Claude Code 使用 Anthropic API 的 defer_loading beta 特性。
+  延迟工具的 Schema 会放在对话历史的 tool_result 消息里，而不是工具定义区域，
+  因此 cache 前缀不受影响。
 
-  我们用的是另一种方式：直接动态修改 tools 列表。这意味着发现新工具的那一轮会丢失 cache。
-  但实际上工具发现主要集中在对话前几轮——用户一上来就会说"帮我查个 Issue"、"帮我看看数据库"，前两三轮把需要的工具都搜出来之后，工具列表就稳定了，后面的 cache 不受影响。
+  我们直接动态修改 tools 列表，因此发现新工具的那一轮会丢失 cache。
+  但工具发现通常集中在对话前几轮：用户可能会先查 Issue 或数据库。
+  前两三轮找到需要的工具后，列表就稳定下来，后续 cache 不受影响。
 
-  知识体系课还介绍了一种更激进的方案：ToolSearch + CallTool 双工具代理模式。tools 列表里永远只有 tool_search 和 call_tool 两个元工具，
-  模型先搜索获取 Schema，再通过 call_tool 转发执行，应用层根据 tool_name 路由到真正的工具实现。这样工具列表从头到尾不变，cache 完全稳定。
-  代价是模型不是通过 tools 参数里的结构化 Schema 来"认识"工具的，而是通过对话历史里的文本描述来理解参数格式，参数复杂的工具准确率会略低一些。
+  另一种更激进的方案是 ToolSearch + CallTool 双工具代理模式。
+  tools 列表始终只有 tool_search 和 call_tool 两个元工具。
+  模型先搜索 Schema，再由 call_tool 转发执行；应用层按 tool_name 路由。
+  这样工具列表始终不变，cache 完全稳定。
+  代价是模型通过对话历史中的文本描述理解参数，而不是结构化 Schema，
+  因此复杂工具的参数准确率可能略低。
 
-  两种做法各有取舍，但我推荐在生产环境还是使用本文实战的方法比较好，因为用的是原生 tools 列表做工具加载，稳定性更有保障。
+  两种做法各有取舍。生产环境我更推荐本文的方法，
+  因为它使用原生 tools 列表加载工具，稳定性更有保障。
   */
   getActiveTools(): ToolDefinition[] {
     return this.getAll().filter((tool) => {
@@ -179,7 +191,8 @@ export class ToolRegistry {
     const q = query.trim();
     const results: ToolDefinition[] = [];
 
-    // 支持逗号分隔的多个工具名，如 "mcp__github__list_issues,mcp__github__search_repositories"
+    // 支持逗号分隔的多个工具名，例如：
+    // "mcp__github__list_issues,mcp__github__search_repositories"
     const names = q.includes(",")
       ? q
           .split(",")
@@ -283,8 +296,9 @@ export class ToolRegistry {
     // splice(0) 把整个队列摘出来，队列瞬间变空。然后挨个调用它们。
     const waiting = this.waitQueue.splice(0);
     /*
-     * 调用 resolve() 不等于让那个函数接着跑。resolve 只是把对应的 Promise 标记成已兑现，
-     * await 后面的代码被排进微任务队列，要等当前这整段同步代码跑完才逐个执行。
+     * 调用 resolve() 不等于让对应函数立刻继续运行。
+     * 它只会把 Promise 标记为已兑现。
+     * await 后续代码会进入微任务队列，等当前同步代码跑完才执行。
      *
      * 那它们醒来做什么？回到 while 上重新看一眼：
      *
@@ -293,16 +307,19 @@ export class ToolRegistry {
      *   }
      *   this.concurrentCount++;               // 条件为假才走得到这
      *
-     * 被叫醒，和拿到锁是两回事。醒来发现锁还被占着，它会造一个新的 Promise、新的 resolve，
-     * push 回队列，再睡一轮。用 while 而不用 if，原因就在这：if 只检查一次，醒来就往下冲，
-     * 那被唤醒的人全都会以为自己拿到锁了。
+     * 被叫醒和拿到锁是两回事。醒来发现锁仍被占用，
+     * 它会创建新的 Promise 和 resolve，放回队列后再等待。
+     * 这里用 while 而不用 if：if 只检查一次，醒来就继续往下执行，
+     * 被唤醒的任务可能会误以为自己已经拿到锁。
      *
-     * 所以 drainQueue 不做任何判定。它只干一件事：把所有人叫醒，让他们自己回去抢。
+     * 所以 drainQueue 不做判定，只负责唤醒所有等待者，
+     * 让它们自己回去抢锁。
      * 谁有资格进，全写在 while 的条件里。
      *
-     * 顺带说，push 和那条 while 判断之间没有任何 await，从头到尾是同步代码。
-     * JS 单线程保证这段不被打断，所以不可能出现"检查时锁还被占着、还没进队列，
-     * 对方就 drain 了一个空队列"这种永久睡死的情况——这是单线程白送的。
+     * push 和 while 判断之间没有 await，从头到尾都是同步代码。
+     * JS 单线程保证这段不会被打断，所以不会出现这样的情况：
+     * 检查时锁被占用、任务还没进队列，对方就 drain 了空队列。
+     * 这样任务就不会永久睡死；这是单线程带来的保证。
      * 换成多线程语言，这段必须加锁保护。
      */
     for (const resolve of waiting) resolve();
@@ -310,7 +327,8 @@ export class ToolRegistry {
 
   /*
    * toAISDKFormat() 的核心工作就是：
-   * 遍历所有注册的工具，把每个工具精简成 AI SDK 要的 {description, inputSchema, execute} 格式。
+   * 遍历所有注册的工具，并精简成 AI SDK 所需的格式：
+   * {description, inputSchema, execute}。
    * 同时它还很聪明地做了一件事——在 execute 外面包了一层截断逻辑。
    * 换句话说，原本工具直接返回原始结果，现在变成了
    * "先执行 → 转成字符串 → 如果超过长度就保留头和尾，中间省略"。
